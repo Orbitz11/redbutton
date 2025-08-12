@@ -53,7 +53,7 @@ logo = r"""
 
 def print_header():
     print(Fore.RED + logo)
-    print(Fore.YELLOW + "[Info] v1.1 [Coded By : White Pirates]\n" + Style.RESET_ALL)
+    print(Fore.YELLOW + "[Info] v1.2 [Coded By : White Pirates]\n" + Style.RESET_ALL)
 
 def colored_option(index, text):
     return (
@@ -545,8 +545,9 @@ def menu():
     print(colored_option(13, "Save PDF Report"))
     print(colored_option(14, "Check Hosts File"))
     print(colored_option(15, "Check System Updates"))
+    print(colored_option(16, "Honeypot"))
     print(colored_option(0, "Exit"))
-
+    
 def full_scan():
     list_processes()
     print("Scanning suspicious files (last 7 days)...")
@@ -673,6 +674,16 @@ def main_loop():
             elif choice == "15":
                 if confirm("Check system updates? (Windows only) (y/n): "):
                     check_system_updates()
+                    
+            elif choice == "16":
+                if confirm("Start Honeypot server? (y/n): "):
+                    print_loading()
+                    honeypot_server()
+                    print_done()
+
+
+
+                    
             elif choice == "0":
                 if confirm("Exit the program? (y/n): "):
                     print("Exiting. Keep your passwords and backups safe.")
@@ -687,5 +698,43 @@ def main_loop():
             print("Unexpected error:", e)
             time.sleep(1)
 
+
+
+
+def handle_client(client_socket, addr):
+    print(f"Connection from {addr}")
+    try:
+        client_socket.send(b"try in a next time hahahahahaha\n")
+        while True:
+            data = client_socket.recv(1024)
+            if not data:
+                break
+            print(f"Received from {addr}: {data.decode(errors='ignore').strip()}")
+            client_socket.send(b"Echo: " + data)
+    except Exception as e:
+        print(f"Error with client {addr}: {e}")
+    finally:
+        client_socket.close()
+        print(f"Connection closed {addr}")
+
+def honeypot_server(host='0.0.0.0', port=2222):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind((host, port))
+    server.listen(5)
+    print(f"Honeypot listening on {host}:{port}")
+    try:
+        while True:
+            client_socket, addr = server.accept()
+            client_thread = threading.Thread(target=handle_client, args=(client_socket, addr))
+            client_thread.daemon = True
+            client_thread.start()
+    except KeyboardInterrupt:
+        print("Honeypot server stopped.")
+    finally:
+        server.close()
+
+
 if __name__ == "__main__":
     main_loop()
+
+
