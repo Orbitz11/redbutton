@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import json
 import hashlib
 import threading
 import socket
@@ -9,7 +10,6 @@ import shutil
 import getpass
 import base64
 from datetime import datetime, timedelta
-from colorama import init, Fore, Style
 
 try:
     import psutil
@@ -32,13 +32,19 @@ except Exception:
     HAS_REQUESTS = False
 
 try:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
-    HAS_PDF = True
+    from colorama import init, Fore, Style
+    init(autoreset=True)
 except Exception:
-    HAS_PDF = False
+    class Dummy:
+        def __getattr__(self, k):
+            return ''
+    Fore = Style = Dummy()
+    def init(*args, **kwargs):
+        pass
 
-init(autoreset=True)
+VERSION = "1.3"
+UPDATE_INFO_URL = "https://raw.githubusercontent.com/Orbitz11/redbutton/main/update.json"
+
 
 logo = r"""
  /$$$$$$$                  /$$ /$$$$$$$              /$$     /$$                        
@@ -53,22 +59,13 @@ logo = r"""
 
 def print_header():
     print(Fore.RED + logo)
-    print(Fore.YELLOW + "[Info] v1.2 [Coded By : White Pirates]\n" + Style.RESET_ALL)
+    print(Fore.YELLOW + f"[Info] v{VERSION} [Coded by: White Pirates]\n" + Style.RESET_ALL)
 
 def colored_option(index, text):
-    return (
-        Fore.RED + "[" +
-        Fore.WHITE + f"{index:02}" +
-        Fore.RED + "] " +
-        Fore.YELLOW + text +
-        Style.RESET_ALL
-    )
+    return Fore.RED + "[" + Fore.WHITE + f"{index:02}" + Fore.RED + "] " + Fore.YELLOW + text + Style.RESET_ALL
 
-def print_loading():
-    print(Fore.RED + "[*] " + Style.RESET_ALL + "Working...")
-
-def print_done():
-    print(Fore.GREEN + "Done." + Style.RESET_ALL)
+SUSPICIOUS_EXTS = {".exe", ".scr", ".dll", ".vbs", ".js", ".jar", ".bat", ".ps1", ".cmd", ".hta", ".sys", ".com", ".pif"}
+COMMON_PORTS = [21,22,23,25,53,80,110,143,443,445,3389,5900,8080]
 
 def confirm(prompt="Are you sure? (y/n): "):
     try:
@@ -86,25 +83,20 @@ def sha256_of_file(path, block_size=65536):
 
 def disconnect_internet():
     if sys.platform.startswith("win"):
-        print(Fore.RED + "[*] " + Style.RESET_ALL + "Running: ipconfig /release (may require admin privileges)")
         try:
             subprocess.run(["ipconfig", "/release"], check=False)
-            print_done()
+            print("Done.")
         except Exception as e:
-            print("Error while disconnecting internet:", e)
+            print("Error:", e)
     else:
         try:
             if shutil.which("nmcli"):
                 subprocess.run(["nmcli", "networking", "off"], check=False)
-                print_done()
+                print("Done.")
             else:
-                print("Non-Windows OS — please run appropriate system commands manually (requires admin).")
+                print("Unsupported automatic method on this OS.")
         except Exception as e:
-            print("Error while attempting to disconnect network:", e)
-
-SUSPICIOUS_EXTS = {
-    ".exe", ".scr", ".dll", ".vbs", ".js", ".jar", ".bat", ".ps1", ".cmd", ".hta", ".sys", ".com", ".pif"
-}
+            print("Error:", e)
 
 def find_suspicious_files(base_paths=None, days=7):
     if base_paths is None:
@@ -131,12 +123,7 @@ def find_suspicious_files(base_paths=None, days=7):
                             sha = sha256_of_file(path)
                         except Exception:
                             sha = None
-                        results.append({
-                            "path": path,
-                            "ext": ext,
-                            "mtime": mtime,
-                            "sha256": sha
-                        })
+                        results.append({"path": path, "ext": ext, "mtime": mtime.isoformat(), "sha256": sha})
                 except Exception:
                     continue
     return results
@@ -148,65 +135,56 @@ def quarantine_file(path, quarantine_dir=None):
     try:
         dest = os.path.join(quarantine_dir, os.path.basename(path))
         shutil.move(path, dest)
-        print(f"Moved {path} to quarantine: {dest}")
+        print(f"Moved {path} to {dest}")
     except Exception as e:
-        print("Error while moving file:", e)
+        print("Error:", e)
 
 def lock_system():
     if sys.platform.startswith("win"):
         try:
             import ctypes
             ctypes.windll.user32.LockWorkStation()
-            print_done()
+            print("Done.")
         except Exception:
             try:
                 subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"])
-                print_done()
+                print("Done.")
             except Exception as e:
-                print("Failed to lock system:", e)
+                print("Error:", e)
     else:
-        cmds = [
-            ["gnome-screensaver-command", "-l"],
-            ["xdg-screensaver", "lock"],
-            ["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend"]
-        ]
+        cmds = [["gnome-screensaver-command", "-l"],["xdg-screensaver", "lock"],["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend"]]
         for c in cmds:
             try:
                 subprocess.run(c, check=False)
-                print_done()
+                print("Done.")
                 return
             except Exception:
                 continue
-        print("Screen lock not supported automatically on this OS in current version.")
+        print("Not supported automatically on this OS.")
 
 def derive_key(password: str, salt: bytes):
     if not HAS_CRYPTO:
         raise RuntimeError("cryptography not available")
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=390000,
-    )
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=390000)
     return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
 def encrypt_folder(folder_path):
     if not HAS_CRYPTO:
-        print("Cryptography library not installed. Install with: pip install cryptography")
+        print("Install cryptography")
         return
     if not os.path.exists(folder_path):
-        print("Folder not found.")
+        print("Folder not found")
         return
-    password = getpass.getpass("Enter password to create encryption key: ")
+    password = getpass.getpass("Enter password: ")
     if not password:
-        print("Empty password. Cancelled.")
+        print("Empty password")
         return
     base_name = os.path.abspath(folder_path.rstrip(os.sep))
-    tmp_zip = base_name + "_redbtn_temp"
+    tmp_zip = base_name + "_rbtmp"
     try:
         zipfile_path = shutil.make_archive(tmp_zip, 'zip', folder_path)
     except Exception as e:
-        print("Error creating archive:", e)
+        print("Error:", e)
         return
     salt = os.urandom(16)
     key = derive_key(password, salt)
@@ -221,17 +199,16 @@ def encrypt_folder(folder_path):
         os.remove(zipfile_path)
     except Exception:
         pass
-    print("Encrypted file created:", out_path)
-    print("Keep the password safe — without it, files cannot be recovered.")
+    print("Encrypted file:", out_path)
 
 def decrypt_file(enc_path):
     if not HAS_CRYPTO:
-        print("Cryptography library not installed. Install with: pip install cryptography")
+        print("Install cryptography")
         return
     if not os.path.exists(enc_path):
-        print("Encrypted file not found.")
+        print("File not found")
         return
-    password = getpass.getpass("Enter password to decrypt: ")
+    password = getpass.getpass("Enter password: ")
     with open(enc_path, "rb") as rf:
         content = rf.read()
     salt = content[:16]
@@ -241,7 +218,7 @@ def decrypt_file(enc_path):
     try:
         data = f.decrypt(encrypted)
     except Exception:
-        print("Wrong password or corrupted file.")
+        print("Wrong password or corrupted file")
         return
     out_zip = enc_path + ".decrypted.zip"
     with open(out_zip, "wb") as wf:
@@ -250,12 +227,10 @@ def decrypt_file(enc_path):
         extract_dir = enc_path + "_extracted"
         shutil.unpack_archive(out_zip, extract_dir)
         os.remove(out_zip)
-        print("Decrypted and extracted to:", extract_dir)
+        print("Extracted to:", extract_dir)
     except Exception:
         print("Decrypted to:", out_zip)
-        print("To extract manually, unzip the file.")
 
-COMMON_PORTS = [21,22,23,25,53,80,110,143,443,445,3389,5900,8080]
 
 def port_scan(host="127.0.0.1", ports=None, timeout=0.4):
     if ports is None:
@@ -288,7 +263,7 @@ def port_scan(host="127.0.0.1", ports=None, timeout=0.4):
     return sorted(open_ports)
 
 def list_processes():
-    print("Running processes (user, PID, process name):")
+    print("Running processes (user, PID, name):")
     if HAS_PSUTIL:
         try:
             for p in psutil.process_iter(['pid','name','username']):
@@ -297,37 +272,34 @@ def list_processes():
                 except Exception:
                     continue
         except Exception as e:
-            print("Error enumerating processes with psutil:", e)
+            print("Error:", e)
     else:
         if sys.platform.startswith("win"):
             try:
                 out = subprocess.check_output(["tasklist"], shell=False, text=True, stderr=subprocess.DEVNULL)
                 print(out)
             except Exception as e:
-                print("Unable to list processes:", e)
+                print("Error:", e)
         else:
             try:
                 out = subprocess.check_output(["ps", "aux"], text=True)
                 print(out)
             except Exception as e:
-                print("Unable to list processes:", e)
+                print("Error:", e)
 
 def disk_usage():
-    print("Disk Usage Info:")
+    print("Disk Usage:")
     if HAS_PSUTIL:
         try:
             partitions = psutil.disk_partitions(all=False)
             for p in partitions:
                 try:
-                    usage = psutil.disk_usage(p.mountpoint)
-                    total_gb = usage.total / (1024**3)
-                    used_gb = usage.used / (1024**3)
-                    free_gb = usage.free / (1024**3)
-                    print(f"{p.device} ({p.mountpoint}) - Total: {total_gb:.2f}GB | Used: {used_gb:.2f}GB | Free: {free_gb:.2f}GB | FS: {p.fstype}")
+                    u = psutil.disk_usage(p.mountpoint)
+                    print(f"{p.device} ({p.mountpoint}) Total:{u.total/(1024**3):.2f}GB Used:{u.used/(1024**3):.2f}GB Free:{u.free/(1024**3):.2f}GB FS:{p.fstype}")
                 except Exception:
                     continue
         except Exception as e:
-            print("Error reading disk partitions:", e)
+            print("Error:", e)
     else:
         roots = [os.path.expanduser("~"), "/"]
         seen = set()
@@ -338,17 +310,13 @@ def disk_usage():
                     continue
                 usage = shutil.disk_usage(root)
                 seen.add(root)
-                total_gb = usage.total / (1024**3)
-                used_gb = (usage.total - usage.free) / (1024**3)
-                free_gb = usage.free / (1024**3)
-                print(f"{root} - Total: {total_gb:.2f}GB | Used: {used_gb:.2f}GB | Free: {free_gb:.2f}GB")
+                print(f"{root} Total:{usage.total/(1024**3):.2f}GB Used:{(usage.total-usage.free)/(1024**3):.2f}GB Free:{usage.free/(1024**3):.2f}GB")
             except Exception:
                 continue
 
 def monitor_resources():
-    print("Top Processes by CPU and Memory:")
     if not HAS_PSUTIL:
-        print("psutil not installed. Install with: pip install psutil")
+        print("Install psutil")
         return
     try:
         for p in psutil.process_iter():
@@ -361,12 +329,7 @@ def monitor_resources():
         for p in psutil.process_iter(['pid','name','cpu_percent','memory_percent']):
             try:
                 info = p.info
-                processes.append((
-                    info.get('cpu_percent', 0.0),
-                    info.get('memory_percent', 0.0),
-                    info.get('pid'),
-                    info.get('name')
-                ))
+                processes.append((info.get('cpu_percent',0.0), info.get('memory_percent',0.0), info.get('pid'), info.get('name')))
             except Exception:
                 continue
         processes.sort(reverse=True, key=lambda x: (x[0], x[1]))
@@ -374,7 +337,7 @@ def monitor_resources():
         for cpu, mem, pid, name in processes[:15]:
             print(f"{pid:6} {cpu:6.1f} {mem:6.1f} {name}")
     except Exception as e:
-        print("Error monitoring resources:", e)
+        print("Error:", e)
 
 def network_info():
     try:
@@ -400,14 +363,15 @@ def network_info():
             for ifname, addlist in addrs.items():
                 print(f"\nInterface: {ifname}")
                 for addr in addlist:
-                    print(f"  - {addr.family.name if hasattr(addr.family, 'name') else addr.family}: {addr.address}")
+                    fam = getattr(addr.family, 'name', addr.family)
+                    print(f"  - {fam}: {addr.address}")
         except Exception:
             pass
 
 def find_large_files(base_path=None, top_n=10):
     if base_path is None:
         base_path = os.path.expanduser("~")
-    print(f"Scanning for largest files in: {base_path} (this may take a while)...")
+    print(f"Scanning largest files in: {base_path}")
     files = []
     for root, dirs, filenames in os.walk(base_path):
         for fname in filenames:
@@ -418,9 +382,9 @@ def find_large_files(base_path=None, top_n=10):
             except Exception:
                 continue
     files.sort(reverse=True)
-    print(f"Largest {top_n} files in {base_path}:")
     for size, path in files[:top_n]:
         print(f"{size/(1024**2):.2f} MB - {path}")
+
 
 def temp_cleaner(do_remove=True):
     temp_dirs = []
@@ -429,13 +393,14 @@ def temp_cleaner(do_remove=True):
     else:
         temp_dirs.extend([os.environ.get("TMPDIR","/tmp"), "/var/tmp"])
     temp_dirs = [d for d in set(temp_dirs) if d]
+    removed_total = 0
     for tdir in temp_dirs:
         print(f" - {tdir}")
         if not os.path.exists(tdir):
-            print("   (not present)")
+            print("   not present")
             continue
         entries = os.listdir(tdir)
-        print(f"   Contains {len(entries)} entries")
+        print(f"   contains {len(entries)} entries")
         if do_remove:
             removed = 0
             for f in entries:
@@ -449,51 +414,15 @@ def temp_cleaner(do_remove=True):
                         removed += 1
                 except Exception:
                     continue
-            print(f"   Removed approx {removed} entries from {tdir}")
-    print_done()
+            removed_total += removed
+            print(f"   removed approx {removed} entries")
+    print("Done.")
+    return removed_total
 
-def save_pdf_report(report_path=None):
-    if not HAS_PDF:
-        print("reportlab not installed. Install: pip install reportlab")
-        return
-    if report_path is None:
-        report_path = f"security_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    try:
-        c = canvas.Canvas(report_path, pagesize=letter)
-        line = 750
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(60, line, "Security Scan Report")
-        line -= 20
-        c.setFont("Helvetica", 10)
-        c.drawString(60, line, f"Generated: {datetime.now().isoformat()}")
-        line -= 30
-        if HAS_PSUTIL:
-            try:
-                partitions = psutil.disk_partitions(all=False)
-                c.drawString(60, line, "Disk partitions summary:")
-                line -= 14
-                for p in partitions[:8]:
-                    try:
-                        usage = psutil.disk_usage(p.mountpoint)
-                        text = f"{p.device} ({p.mountpoint}) - {usage.total//(1024**3)}GB total, {usage.free//(1024**3)}GB free"
-                        c.drawString(72, line, text)
-                        line -= 12
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-        hits = find_suspicious_files(days=7)
-        c.drawString(60, line, f"Suspicious files found (scan): {len(hits)}")
-        line -= 20
-        c.drawString(60, line, "Note: For full details, run the tool interactively.")
-        c.save()
-        print("PDF report saved to:", report_path)
-    except Exception as e:
-        print("Failed to write PDF report:", e)
 
 def check_hosts_file():
     if sys.platform.startswith("win"):
-        hosts_path = r"C:\Windows\System32\drivers\etc\hosts"
+        hosts_path = r"C:\\Windows\\System32\\drivers\\etc\\hosts"
     else:
         hosts_path = "/etc/hosts"
     if not os.path.exists(hosts_path):
@@ -505,28 +434,118 @@ def check_hosts_file():
     except Exception as e:
         print("Unable to read hosts file:", e)
         return
-    suspicious = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
+    entries = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
     print(f"Hosts file: {hosts_path}")
-    if suspicious:
-        print("Non-comment entries found (may be normal, inspect manually):")
-        for s in suspicious:
+    if entries:
+        print("Non-comment entries:")
+        for s in entries:
             print("  ", s)
     else:
-        print("No non-comment (suspicious) entries found.")
+        print("No non-comment entries found")
 
-def check_system_updates():
-    if not sys.platform.startswith("win"):
-        print("Update check currently implemented for Windows only.")
+def auto_update():
+    if not HAS_REQUESTS:
+        print("Install requests")
         return
-    cmd = 'powershell -Command "Get-WindowsUpdate -AcceptAll -IgnoreReboot"'
+    if not UPDATE_INFO_URL:
+        print("Set REDBUTTON_UPDATE_INFO_URL")
+        return
     try:
-        output = subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.STDOUT, timeout=90)
-        print(output)
-    except subprocess.CalledProcessError as e:
-        print("PowerShell command failed. You may need the PSWindowsUpdate module or admin rights.")
-        print("Output:", e.output if hasattr(e, 'output') else e)
+        r = requests.get(UPDATE_INFO_URL, timeout=6)
+        r.raise_for_status()
+        info = r.json()
+        remote_ver = str(info.get("version", ""))
+        url = info.get("url")
+        expected_sha = info.get("sha256")
+        if not remote_ver or not url:
+            print("Malformed update info")
+            return
+        if remote_ver <= VERSION:
+            print(f"Already up-to-date (local {VERSION}, remote {remote_ver})")
+            return
+        print(f"New version available: {remote_ver}")
+        data = requests.get(url, timeout=10).content
+        if expected_sha:
+            sha = hashlib.sha256(data).hexdigest()
+            if sha.lower() != expected_sha.lower():
+                print("SHA256 mismatch")
+                return
+        cur = os.path.abspath(sys.argv[0])
+        bak = cur + ".bak"
+        with open(bak, "wb") as f:
+            f.write(open(cur, "rb").read())
+        with open(cur, "wb") as f:
+            f.write(data)
+        print(f"Updated to {remote_ver}. Backup: {bak}. Restart the tool.")
     except Exception as e:
-        print("Error while checking updates:", e)
+        print("Update failed:", e)
+
+
+def geoip_lookup(ip: str) -> dict:
+    if not HAS_REQUESTS:
+        return {}
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,lat,lon,timezone,isp,org,as,query"
+        r = requests.get(url, timeout=4)
+        j = r.json()
+        if j.get("status") == "success":
+            return {"ip": j.get("query"), "country": j.get("country"), "region": j.get("regionName"), "city": j.get("city"), "lat": j.get("lat"), "lon": j.get("lon"), "timezone": j.get("timezone"), "isp": j.get("isp"), "org": j.get("org"), "asn": j.get("as")}
+    except Exception:
+        pass
+    return {}
+
+
+def handle_client(client_socket, addr):
+    ip, port = addr[0], addr[1]
+    print(f"Connection from {addr}")
+    geo = geoip_lookup(ip)
+    if geo:
+        print("GeoIP:", json.dumps(geo, ensure_ascii=False))
+    try:
+        client_socket.send(b"Welcome\n")
+        while True:
+            data = client_socket.recv(1024)
+            if not data:
+                break
+            msg = data.decode(errors='ignore').strip()
+            print(f"Received from {addr}: {msg}")
+            client_socket.send(b"OK\n")
+    except Exception as e:
+        print(f"Client error {addr}: {e}")
+    finally:
+        client_socket.close()
+        print(f"Connection closed {addr}")
+
+
+def honeypot_server(host='0.0.0.0', port=2222):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(5)
+    print(f"Honeypot listening on {host}:{port}")
+    try:
+        while True:
+            client_socket, addr = server.accept()
+            client_thread = threading.Thread(target=handle_client, args=(client_socket, addr))
+            client_thread.daemon = True
+            client_thread.start()
+    except KeyboardInterrupt:
+        print("Honeypot stopped")
+    finally:
+        server.close()
+
+
+def full_scan():
+    list_processes()
+    print("Scanning suspicious files (last 7 days)...")
+    hits = find_suspicious_files(days=7)
+    print(f"Suspicious files found: {len(hits)}")
+    for h in hits[:10]:
+        print(f" - {h['path']} sha256:{h.get('sha256')}")
+    print("Local port scan (127.0.0.1)...")
+    open_ports = port_scan("127.0.0.1")
+    print("Open ports:", open_ports if open_ports else "None")
+
 
 def menu():
     print()
@@ -542,22 +561,27 @@ def menu():
     print(colored_option(10, "Network Info"))
     print(colored_option(11, "Find Large Files"))
     print(colored_option(12, "Temp Cleaner"))
-    print(colored_option(13, "Save PDF Report"))
-    print(colored_option(14, "Check Hosts File"))
-    print(colored_option(15, "Check System Updates"))
-    print(colored_option(16, "Honeypot"))
+    print(colored_option(13, "Check Hosts File"))
+    print(colored_option(14, "Check System Updates (Windows)"))
+    print(colored_option(15, "Honeypot"))
+    print(colored_option(16, "Auto Update"))
     print(colored_option(0, "Exit"))
-    
-def full_scan():
-    list_processes()
-    print("Scanning suspicious files (last 7 days)...")
-    hits = find_suspicious_files(days=7)
-    print(f"Suspicious files found: {len(hits)} (showing first 10)")
-    for h in hits[:10]:
-        print(f" - {h['path']} (sha256:{h.get('sha256')})")
-    print("Local port scan (127.0.0.1)...")
-    open_ports = port_scan("127.0.0.1")
-    print("Open ports:", open_ports if open_ports else "None")
+
+
+def check_system_updates():
+    if not sys.platform.startswith("win"):
+        print("Windows only")
+        return
+    cmd = 'powershell -Command "Get-WindowsUpdate -AcceptAll -IgnoreReboot"'
+    try:
+        output = subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.STDOUT, timeout=90)
+        print(output)
+    except subprocess.CalledProcessError as e:
+        print("PowerShell failed. You may need PSWindowsUpdate or admin rights.")
+        print("Output:", e.output if hasattr(e, 'output') else e)
+    except Exception as e:
+        print("Error:", e)
+
 
 def main_loop():
     print_header()
@@ -567,59 +591,51 @@ def main_loop():
             choice = input("\nChoose an option: ").strip()
             if choice == "1":
                 if confirm("This will disconnect the internet. Continue? (y/n): "):
-                    print_loading()
                     disconnect_internet()
-                    print_done()
             elif choice == "2":
                 days_in = input("Scan files changed in last (days, default 7): ").strip()
                 try:
                     days = int(days_in) if days_in else 7
                 except:
                     days = 7
-                print_loading()
                 hits = find_suspicious_files(days=days)
                 if not hits:
-                    print("No suspicious files found in default locations.")
+                    print("No suspicious files found")
                 else:
                     for i, h in enumerate(hits, 1):
-                        print(f"\n[{i:02}] {h['path']}\n    ext: {h['ext']}  --  mtime: {h['mtime']}\n    sha256: {h.get('sha256')}")
-                    if confirm("\nMove selected files to quarantine? (y/n): "):
-                        idxs = input("Enter file numbers separated by space or 'all': ").strip()
+                        print(f"\n[{i:02}] {h['path']}\n    ext: {h['ext']}  mtime: {h['mtime']}\n    sha256: {h.get('sha256')}")
+                    if confirm("\nMove selected to quarantine? (y/n): "):
+                        idxs = input("Enter file numbers or 'all': ").strip()
                         if idxs.lower() == "all":
-                            for h in hits:
-                                if confirm(f"Quarantine {h['path']} ? (y/n): "):
-                                    quarantine_file(h['path'])
+                            selected = list(range(1, len(hits)+1))
                         else:
+                            selected = []
                             for token in idxs.split():
                                 try:
-                                    j = int(token) - 1
-                                    if 0 <= j < len(hits):
-                                        if confirm(f"Quarantine {hits[j]['path']} ? (y/n): "):
-                                            quarantine_file(hits[j]['path'])
+                                    j = int(token)
+                                    if 1 <= j <= len(hits):
+                                        selected.append(j)
                                 except:
                                     continue
-                print_done()
+                        for j in selected:
+                            h = hits[j-1]
+                            if confirm(f"Quarantine {h['path']} ? (y/n): "):
+                                quarantine_file(h['path'])
+                
             elif choice == "3":
-                if confirm("Lock the local workstation now? (y/n): "):
-                    print_loading()
+                if confirm("Lock the workstation now? (y/n): "):
                     lock_system()
-                    print_done()
             elif choice == "4":
-                folder = input("Enter path to folder to encrypt: ").strip()
-                if folder:
-                    if confirm(f"Create encrypted archive for folder {folder}? (y/n): "):
-                        print_loading()
-                        encrypt_folder(folder)
-                        print_done()
+                folder = input("Enter path to folder: ").strip()
+                if folder and confirm(f"Encrypt folder {folder}? (y/n): "):
+                    encrypt_folder(folder)
             elif choice == "5":
                 enc = input("Enter path to encrypted file (.redbtn): ").strip()
                 if enc and confirm(f"Decrypt file {enc}? (y/n): "):
-                    print_loading()
                     decrypt_file(enc)
-                    print_done()
             elif choice == "6":
                 target = input("Enter target (default 127.0.0.1): ").strip() or "127.0.0.1"
-                ports = input("Enter comma-separated ports or press Enter for common ports: ").strip()
+                ports = input("Enter comma-separated ports or press Enter: ").strip()
                 if ports:
                     try:
                         ports_list = [int(x.strip()) for x in ports.split(",") if x.strip()]
@@ -628,23 +644,14 @@ def main_loop():
                 else:
                     ports_list = COMMON_PORTS
                 if confirm(f"Run port scan on {target} with ports {ports_list}? (y/n): "):
-                    print_loading()
                     open_ports = port_scan(target, ports_list)
-                    if open_ports:
-                        print("Open ports:", open_ports)
-                    else:
-                        print("No open ports found from given list.")
-                    print_done()
+                    print("Open ports:", open_ports if open_ports else "None")
             elif choice == "7":
                 if confirm("Run full scan now? (y/n): "):
-                    print_loading()
                     full_scan()
-                    print_done()
             elif choice == "8":
                 if confirm("Show disk usage info? (y/n): "):
-                    print_loading()
                     disk_usage()
-                    print_done()
             elif choice == "9":
                 if confirm("Show CPU & RAM monitor? (y/n): "):
                     monitor_resources()
@@ -652,7 +659,7 @@ def main_loop():
                 if confirm("Show network info? (y/n): "):
                     network_info()
             elif choice == "11":
-                path = input("Enter folder path (leave blank for home): ").strip() or None
+                path = input("Enter folder path (blank for home): ").strip() or None
                 try:
                     n = int(input("How many top files to show (default 10): ").strip() or "10")
                 except Exception:
@@ -660,37 +667,32 @@ def main_loop():
                 if confirm(f"Scan {path or 'home'} for top {n} largest files? (y/n): "):
                     find_large_files(path, top_n=n)
             elif choice == "12":
-                if confirm("Clean temp files now? This will remove files from temp directories. (y/n): "):
-                    print_loading()
+                if confirm("Clean temp files now? (y/n): "):
                     temp_cleaner(do_remove=True)
-                    print_done()
             elif choice == "13":
-                fname = input("Enter PDF filename (leave blank for autogenerated): ").strip() or None
-                if confirm("Create PDF report now? (y/n): "):
-                    save_pdf_report(fname)
-            elif choice == "14":
-                if confirm("Check hosts file for non-comment entries? (y/n): "):
+                if confirm("Check hosts file? (y/n): "):
                     check_hosts_file()
-            elif choice == "15":
+            elif choice == "14":
                 if confirm("Check system updates? (Windows only) (y/n): "):
                     check_system_updates()
-                    
-            elif choice == "16":
+            elif choice == "15":
                 if confirm("Start Honeypot server? (y/n): "):
-                    print_loading()
-                    honeypot_server()
-                    print_done()
-
-
-
-                    
+                    host = input("Bind host (default 0.0.0.0): ").strip() or '0.0.0.0'
+                    try:
+                        port = int(input("Port (default 2222): ").strip() or '2222')
+                    except Exception:
+                        port = 2222
+                    honeypot_server(host, port)
+            elif choice == "16":
+                if confirm("Check for updates now? (y/n): "):
+                    auto_update()
             elif choice == "0":
                 if confirm("Exit the program? (y/n): "):
-                    print("Exiting. Keep your passwords and backups safe.")
+                    print("Bye")
                     break
             else:
-                print("Invalid option, try again.")
-            time.sleep(0.3)
+                print("Invalid option")
+            time.sleep(0.25)
         except KeyboardInterrupt:
             print("\nInterrupted by user. Exiting.")
             break
@@ -698,43 +700,5 @@ def main_loop():
             print("Unexpected error:", e)
             time.sleep(1)
 
-
-
-
-def handle_client(client_socket, addr):
-    print(f"Connection from {addr}")
-    try:
-        client_socket.send(b"try in a next time hahahahahaha\n")
-        while True:
-            data = client_socket.recv(1024)
-            if not data:
-                break
-            print(f"Received from {addr}: {data.decode(errors='ignore').strip()}")
-            client_socket.send(b"Echo: " + data)
-    except Exception as e:
-        print(f"Error with client {addr}: {e}")
-    finally:
-        client_socket.close()
-        print(f"Connection closed {addr}")
-
-def honeypot_server(host='0.0.0.0', port=2222):
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((host, port))
-    server.listen(5)
-    print(f"Honeypot listening on {host}:{port}")
-    try:
-        while True:
-            client_socket, addr = server.accept()
-            client_thread = threading.Thread(target=handle_client, args=(client_socket, addr))
-            client_thread.daemon = True
-            client_thread.start()
-    except KeyboardInterrupt:
-        print("Honeypot server stopped.")
-    finally:
-        server.close()
-
-
 if __name__ == "__main__":
     main_loop()
-
-
