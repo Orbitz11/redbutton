@@ -9,6 +9,8 @@ import subprocess
 import shutil
 import getpass
 import base64
+import ssl
+import ipaddress
 from datetime import datetime, timedelta
 
 try:
@@ -42,9 +44,8 @@ except Exception:
     def init(*args, **kwargs):
         pass
 
-VERSION = "1.3"
+VERSION = "1.4"
 UPDATE_INFO_URL = "https://raw.githubusercontent.com/Orbitz11/redbutton/main/update.json"
-
 
 logo = r"""
  /$$$$$$$                  /$$ /$$$$$$$              /$$     /$$                        
@@ -65,7 +66,7 @@ def colored_option(index, text):
     return Fore.RED + "[" + Fore.WHITE + f"{index:02}" + Fore.RED + "] " + Fore.YELLOW + text + Style.RESET_ALL
 
 SUSPICIOUS_EXTS = {".exe", ".scr", ".dll", ".vbs", ".js", ".jar", ".bat", ".ps1", ".cmd", ".hta", ".sys", ".com", ".pif"}
-COMMON_PORTS = [21,22,23,25,53,80,110,143,443,445,3389,5900,8080]
+COMMON_PORTS = [21,22,23,25,53,80,110,143,443,445,3306,3389,5432,5900,6379,8080,8443]
 
 def confirm(prompt="Are you sure? (y/n): "):
     try:
@@ -262,6 +263,68 @@ def port_scan(host="127.0.0.1", ports=None, timeout=0.4):
         t.join()
     return sorted(open_ports)
 
+PORT_SERVICE_MAP = {
+    21: "ftp",
+    22: "ssh",
+    23: "telnet",
+    25: "smtp",
+    53: "dns",
+    80: "http",
+    110: "pop3",
+    143: "imap",
+    443: "https",
+    445: "smb",
+    3306: "mysql",
+    3389: "rdp",
+    5432: "postgres",
+    5900: "vnc",
+    6379: "redis",
+    8080: "http-alt",
+    8443: "https-alt"
+}
+
+def banner_grab(host, port, timeout=1.0):
+    try:
+        if port == 443 or port == 8443:
+            ctx = ssl.create_default_context()
+            with socket.create_connection((host, port), timeout=timeout) as raw:
+                with ctx.wrap_socket(raw, server_hostname=host) as s:
+                    try:
+                        s.settimeout(timeout)
+                        s.send(b"HEAD / HTTP/1.0\r\nHost: " + host.encode(errors='ignore') + b"\r\n\r\n")
+                        data = s.recv(256)
+                    except Exception:
+                        data = b""
+            txt = data.decode(errors="ignore").splitlines()
+            return txt[0].strip() if txt else "tls"
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        try:
+            data = s.recv(256)
+            if not data and port in (80,8080):
+                s.send(b"HEAD / HTTP/1.0\r\n\r\n")
+                data = s.recv(256)
+        except Exception:
+            data = b""
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+        line = data.decode(errors="ignore").splitlines()
+        return line[0].strip() if line else ""
+    except Exception:
+        return ""
+
+def service_scan(host, ports):
+    results = []
+    for p in ports:
+        banner = banner_grab(host, p)
+        service = PORT_SERVICE_MAP.get(p, "unknown")
+        results.append({"port": p, "service": service, "banner": banner})
+    return results
+
 def list_processes():
     print("Running processes (user, PID, name):")
     if HAS_PSUTIL:
@@ -448,7 +511,7 @@ def auto_update():
         print("Install requests")
         return
     if not UPDATE_INFO_URL:
-        print("Set REDBUTTON_UPDATE_INFO_URL")
+        print("Set UPDATE_INFO_URL in code")
         return
     try:
         r = requests.get(UPDATE_INFO_URL, timeout=6)
@@ -465,7 +528,7 @@ def auto_update():
             return
         print(f"New version available: {remote_ver}")
         data = requests.get(url, timeout=10).content
-        if expected_sha:
+        if expected_sha and len(expected_sha) > 10:
             sha = hashlib.sha256(data).hexdigest()
             if sha.lower() != expected_sha.lower():
                 print("SHA256 mismatch")
@@ -494,6 +557,80 @@ def geoip_lookup(ip: str) -> dict:
         pass
     return {}
 
+THREAT_SOURCES = [
+    ("tor_exit", "https://check.torproject.org/torbulkexitlist"),
+    ("firehol_level1", "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset"),
+    ("spamhaus_drop", "https://www.spamhaus.org/drop/drop.txt"),
+    ("spamhaus_edrop", "https://www.spamhaus.org/drop/edrop.txt")
+]
+
+def download_text(url):
+    try:
+        r = requests.get(url, timeout=8)
+        if r.status_code == 200:
+            return r.text
+    except Exception:
+        return ""
+    return ""
+
+def parse_list(text):
+    ips = set()
+    nets = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("#") or s.startswith(";"):
+            continue
+        if " " in s:
+            s = s.split()[0]
+        if ";" in s:
+            s = s.split(";")[0].strip()
+        try:
+            if "/" in s:
+                nets.append(ipaddress.ip_network(s, strict=False))
+            else:
+                ipaddress.ip_address(s)
+                ips.add(s)
+        except Exception:
+            continue
+    return ips, nets
+
+def ip_reputation(ip):
+    if not HAS_REQUESTS:
+        return {"error": "requests not installed"}
+    rep = {"ip": ip, "listed_in": [], "tor_exit": False}
+    try:
+        target = ipaddress.ip_address(ip)
+    except Exception:
+        rep["error"] = "invalid ip"
+        return rep
+    for name, url in THREAT_SOURCES:
+        txt = download_text(url)
+        if not txt:
+            continue
+        ips, nets = parse_list(txt)
+        if ip in ips:
+            rep["listed_in"].append(name)
+            if name == "tor_exit":
+                rep["tor_exit"] = True
+            continue
+        found = False
+        for n in nets:
+            try:
+                if target in n:
+                    found = True
+                    break
+            except Exception:
+                continue
+        if found:
+            rep["listed_in"].append(name)
+            if name == "tor_exit":
+                rep["tor_exit"] = True
+    geo = geoip_lookup(ip)
+    if geo:
+        rep["geo"] = geo
+    return rep
 
 def handle_client(client_socket, addr):
     ip, port = addr[0], addr[1]
@@ -516,7 +653,6 @@ def handle_client(client_socket, addr):
         client_socket.close()
         print(f"Connection closed {addr}")
 
-
 def honeypot_server(host='0.0.0.0', port=2222):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -534,7 +670,6 @@ def honeypot_server(host='0.0.0.0', port=2222):
     finally:
         server.close()
 
-
 def full_scan():
     list_processes()
     print("Scanning suspicious files (last 7 days)...")
@@ -546,6 +681,54 @@ def full_scan():
     open_ports = port_scan("127.0.0.1")
     print("Open ports:", open_ports if open_ports else "None")
 
+def threat_scan():
+    target = input("Enter target IP or hostname: ").strip()
+    if not target:
+        print("No target provided")
+        return
+    try:
+        ip = socket.gethostbyname(target)
+    except Exception:
+        print("Cannot resolve target")
+        return
+    print(f"Resolved target: {target} -> {ip}")
+    ports_in = input("Enter comma-separated ports or press Enter for common set: ").strip()
+    if ports_in:
+        try:
+            ports_list = [int(x.strip()) for x in ports_in.split(",") if x.strip()]
+        except Exception:
+            ports_list = COMMON_PORTS
+    else:
+        ports_list = COMMON_PORTS
+    print(f"Scanning ports on {ip}...")
+    open_ports = port_scan(ip, ports=ports_list)
+    if open_ports:
+        print("Open ports:", open_ports)
+        details = service_scan(ip, open_ports)
+        for d in details:
+            p = d.get("port")
+            svc = d.get("service")
+            ban = d.get("banner") or ""
+            if len(ban) > 140:
+                ban = ban[:140] + "..."
+            print(f" - {p} {svc} | {ban}")
+    else:
+        print("No open ports from provided list")
+    if confirm("Check IP reputation? (y/n): "):
+        rep = ip_reputation(ip)
+        if rep.get("error"):
+            print("Reputation error:", rep.get("error"))
+        else:
+            listed = rep.get("listed_in", [])
+            if listed:
+                print("Listed in:", ", ".join(listed))
+            else:
+                print("No listings found in selected sources")
+            if rep.get("tor_exit"):
+                print("TOR exit node: True")
+            geo = rep.get("geo")
+            if geo:
+                print("Geo:", json.dumps(geo, ensure_ascii=False))
 
 def menu():
     print()
@@ -565,8 +748,9 @@ def menu():
     print(colored_option(14, "Check System Updates (Windows)"))
     print(colored_option(15, "Honeypot"))
     print(colored_option(16, "Auto Update"))
+    print(colored_option(17, "Threat Scan"))
+    print(colored_option(18, "Malware Scanner (Coming sooooooon!!)"))
     print(colored_option(0, "Exit"))
-
 
 def check_system_updates():
     if not sys.platform.startswith("win"):
@@ -581,7 +765,6 @@ def check_system_updates():
         print("Output:", e.output if hasattr(e, 'output') else e)
     except Exception as e:
         print("Error:", e)
-
 
 def main_loop():
     print_header()
@@ -621,7 +804,6 @@ def main_loop():
                             h = hits[j-1]
                             if confirm(f"Quarantine {h['path']} ? (y/n): "):
                                 quarantine_file(h['path'])
-                
             elif choice == "3":
                 if confirm("Lock the workstation now? (y/n): "):
                     lock_system()
@@ -686,6 +868,8 @@ def main_loop():
             elif choice == "16":
                 if confirm("Check for updates now? (y/n): "):
                     auto_update()
+            elif choice == "17":
+                threat_scan()
             elif choice == "0":
                 if confirm("Exit the program? (y/n): "):
                     print("Bye")
