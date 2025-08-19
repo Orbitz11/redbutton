@@ -739,17 +739,11 @@ def menu():
     print(colored_option(5, "Decrypt File (.redbtn)"))
     print(colored_option(6, "Port Scan"))
     print(colored_option(7, "Full Scan"))
-    print(colored_option(8, "Disk Usage"))
-    print(colored_option(9, "CPU & RAM Monitor"))
-    print(colored_option(10, "Network Info"))
-    print(colored_option(11, "Find Large Files"))
-    print(colored_option(12, "Temp Cleaner"))
-    print(colored_option(13, "Check Hosts File"))
-    print(colored_option(14, "Check System Updates (Windows)"))
-    print(colored_option(15, "Honeypot"))
-    print(colored_option(16, "Auto Update"))
-    print(colored_option(17, "Threat Scan"))
-    print(colored_option(18, "Malware Scanner (Coming sooooooon!!)"))
+    print(colored_option(8, "Honeypot"))
+    print(colored_option(9, "Auto Update"))
+    print(colored_option(10, "Threat Scan"))
+    print(colored_option(11, "Malware Scanner"))
+    print(colored_option(12, "Password Leak Checker"))
     print(colored_option(0, "Exit"))
 
 def check_system_updates():
@@ -765,6 +759,107 @@ def check_system_updates():
         print("Output:", e.output if hasattr(e, 'output') else e)
     except Exception as e:
         print("Error:", e)
+
+
+
+def malware_analyzer_online(api_key):
+    if not HAS_REQUESTS:
+        print("Install requests")
+        return
+    file_path = input("Enter file path to scan: ").strip()
+    if not os.path.isfile(file_path):
+        print("File not found")
+        return
+
+    print("Calculating SHA256...")
+    file_hash = sha256_of_file(file_path)
+    print("SHA256:", file_hash)
+
+    headers = {"x-apikey": api_key}
+    url = "https://www.virustotal.com/api/v3/files/" + file_hash
+
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            stats = data.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
+            malicious = stats.get("malicious", 0)
+            undetected = stats.get("undetected", 0)
+            print("Malicious detections:", malicious)
+            print("Undetected:", undetected)
+            print("Full report URL: https://www.virustotal.com/gui/file/" + file_hash)
+
+        elif r.status_code == 404:
+            print("[ℹ] File not in VirusTotal database → uploading now...")
+            upload_url = "https://www.virustotal.com/api/v3/files"
+            with open(file_path, "rb") as f:
+                upload_response = requests.post(upload_url, headers=headers, files={"file": f})
+
+            if upload_response.status_code != 200:
+                print(" Upload error:", upload_response.text)
+                return
+
+            analysis_id = upload_response.json()["data"]["id"]
+            print(f"[✔] Uploaded. Analysis ID: {analysis_id}")
+
+    
+            analysis_url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
+            while True:
+                analysis_resp = requests.get(analysis_url, headers=headers).json()
+                status = analysis_resp["data"]["attributes"]["status"]
+
+                if status == "completed":
+                    stats = analysis_resp["data"]["attributes"]["stats"]
+                    print("Malicious detections:", stats.get("malicious", 0))
+                    print("Undetected:", stats.get("undetected", 0))
+                    print("Full report URL: https://www.virustotal.com/gui/file/" + file_hash)
+                    break
+                else:
+                    print("[*] Still analyzing... please wait")
+                    time.sleep(5)
+
+        else:
+            print("Error from VirusTotal:", r.status_code, r.text)
+
+    except Exception as e:
+        print("Error querying VirusTotal:", e)
+
+
+
+def password_leak_checker():
+    if not HAS_REQUESTS:
+        print("Install requests")
+        return
+    pwd = getpass.getpass("Enter password to check: ").strip()
+    if not pwd:
+        print("Empty password")
+        return
+    sha1 = hashlib.sha1(pwd.encode("utf-8")).hexdigest().upper()
+    prefix = sha1[:5]
+    suffix = sha1[5:]
+    try:
+        headers = {"User-Agent": f"redbutton/{VERSION}"}
+        r = requests.get(f"https://api.pwnedpasswords.com/range/{prefix}", headers=headers, timeout=10)
+        if r.status_code != 200:
+            print("Error:", r.status_code)
+            return
+        found = 0
+        for line in r.text.splitlines():
+            parts = line.split(":")
+            if len(parts) == 2 and parts[0].strip().upper() == suffix:
+                try:
+                    found = int(parts[1].strip())
+                except:
+                    found = 0
+                break
+        if found > 0:
+            print("Found in breaches:", found)
+        else:
+            print("No leak found for this password")
+    except Exception as e:
+        print("Error:", e)
+
+
 
 def main_loop():
     print_header()
@@ -832,32 +927,6 @@ def main_loop():
                 if confirm("Run full scan now? (y/n): "):
                     full_scan()
             elif choice == "8":
-                if confirm("Show disk usage info? (y/n): "):
-                    disk_usage()
-            elif choice == "9":
-                if confirm("Show CPU & RAM monitor? (y/n): "):
-                    monitor_resources()
-            elif choice == "10":
-                if confirm("Show network info? (y/n): "):
-                    network_info()
-            elif choice == "11":
-                path = input("Enter folder path (blank for home): ").strip() or None
-                try:
-                    n = int(input("How many top files to show (default 10): ").strip() or "10")
-                except Exception:
-                    n = 10
-                if confirm(f"Scan {path or 'home'} for top {n} largest files? (y/n): "):
-                    find_large_files(path, top_n=n)
-            elif choice == "12":
-                if confirm("Clean temp files now? (y/n): "):
-                    temp_cleaner(do_remove=True)
-            elif choice == "13":
-                if confirm("Check hosts file? (y/n): "):
-                    check_hosts_file()
-            elif choice == "14":
-                if confirm("Check system updates? (Windows only) (y/n): "):
-                    check_system_updates()
-            elif choice == "15":
                 if confirm("Start Honeypot server? (y/n): "):
                     host = input("Bind host (default 0.0.0.0): ").strip() or '0.0.0.0'
                     try:
@@ -865,15 +934,25 @@ def main_loop():
                     except Exception:
                         port = 2222
                     honeypot_server(host, port)
-            elif choice == "16":
+            elif choice == "9":
                 if confirm("Check for updates now? (y/n): "):
                     auto_update()
-            elif choice == "17":
+            elif choice == "10":
                 threat_scan()
+            elif choice == "11":
+                api_key = input("Enter your VirusTotal API key: ").strip()
+                if api_key:
+                    malware_analyzer_online(api_key)
+                else:
+                    print("API key is required")
             elif choice == "0":
                 if confirm("Exit the program? (y/n): "):
                     print("Bye")
                     break
+                
+            elif choice == "12":
+                password_leak_checker()
+  
             else:
                 print("Invalid option")
             time.sleep(0.25)
