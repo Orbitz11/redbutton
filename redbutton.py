@@ -12,6 +12,8 @@ import base64
 import ssl
 import ipaddress
 from datetime import datetime, timedelta
+import usb.core
+import usb.util
 
 try:
     import psutil
@@ -744,6 +746,7 @@ def menu():
     print(colored_option(10, "Threat Scan"))
     print(colored_option(11, "Malware Scanner"))
     print(colored_option(12, "Password Leak Checker"))
+    print(colored_option(13, "USB Attack Detection"))
     print(colored_option(0, "Exit"))
 
 def check_system_updates():
@@ -859,6 +862,67 @@ def password_leak_checker():
     except Exception as e:
         print("Error:", e)
 
+HAS_USB = True
+
+def usb_attack_detection(scan_exts=None):
+    if not HAS_PSUTIL:
+        print("psutil required for USB detection")
+        return
+
+    if scan_exts is None:
+        scan_exts = SUSPICIOUS_EXTS.union({".inf"})
+
+    print("[*] Monitoring for USB devices... Press Ctrl+C to stop.")
+    known_devices = set(p.device for p in psutil.disk_partitions(all=False))
+
+    try:
+        while True:
+            time.sleep(3)
+            current_devices = set(p.device for p in psutil.disk_partitions(all=False))
+            new_devs = current_devices - known_devices
+            if new_devs:
+                for dev in new_devs:
+                    print(f"[!] New USB storage detected: {dev}")
+                    try:
+                        mountpoint = [p.mountpoint for p in psutil.disk_partitions(all=False) if p.device == dev]
+                        if not mountpoint:
+                            continue
+                        mountpoint = mountpoint[0]
+                        print(f"    Mounted at: {mountpoint}")
+
+                        suspicious_found = False
+                        for root, dirs, files in os.walk(mountpoint):
+                            for fname in files:
+                                ext = os.path.splitext(fname)[1].lower()
+                                if ext in scan_exts:
+                                    fpath = os.path.join(root, fname)
+                                    sha = None
+                                    try:
+                                        sha = sha256_of_file(fpath)
+                                    except Exception:
+                                        pass
+                                    suspicious_found = True
+                                    print(f"    [*] Suspicious file: {fpath} (sha256={sha})")
+
+                        if not suspicious_found:
+                            print("    No suspicious files detected.")
+
+                    except Exception as e:
+                        print("   Error scanning device:", e)
+
+            known_devices = current_devices
+
+            if HAS_USB:
+                devs = usb.core.find(find_all=True)
+                for d in devs:
+                    try:
+                        if d.bDeviceClass == 3:
+                            print("[*] Warning: New HID USB device detected (possible BadUSB)")
+                    except:
+                        continue
+
+    except KeyboardInterrupt:
+        print("\n[*] Stopped USB monitoring.")
 
 
 def main_loop():
@@ -945,14 +1009,14 @@ def main_loop():
                     malware_analyzer_online(api_key)
                 else:
                     print("API key is required")
+            elif choice == "12":
+                password_leak_checker()
+            elif choice == "13":
+                usb_attack_detection()
             elif choice == "0":
                 if confirm("Exit the program? (y/n): "):
                     print("Bye")
                     break
-                
-            elif choice == "12":
-                password_leak_checker()
-  
             else:
                 print("Invalid option")
             time.sleep(0.25)
