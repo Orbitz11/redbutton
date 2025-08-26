@@ -11,9 +11,20 @@ import getpass
 import base64
 import ssl
 import ipaddress
+import win32evtlog
 from datetime import datetime, timedelta
 import usb.core
 import usb.util
+import re, json, math, argparse, uuid, signal
+from collections import defaultdict
+import numpy as np
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import IsolationForest
+
 
 try:
     import psutil
@@ -46,7 +57,7 @@ except Exception:
     def init(*args, **kwargs):
         pass
 
-VERSION = "1.4"
+VERSION = "1.5"
 UPDATE_INFO_URL = "https://raw.githubusercontent.com/Orbitz11/redbutton/main/update.json"
 
 logo = r"""
@@ -59,6 +70,8 @@ logo = r"""
 | $$  | $$|  $$$$$$$|  $$$$$$$| $$$$$$$/|  $$$$$$/  |  $$$$/|  $$$$/|  $$$$$$/| $$  | $$
 |__/  |__/ \_______/ \_______/|_______/  \______/    \___/   \___/   \______/ |__/  |__/
 """
+
+
 
 def print_header():
     print(Fore.RED + logo)
@@ -747,6 +760,7 @@ def menu():
     print(colored_option(11, "Malware Scanner"))
     print(colored_option(12, "Password Leak Checker"))
     print(colored_option(13, "USB Attack Detection"))
+    print(colored_option(14, "AI-Based Log Analyzer"))
     print(colored_option(0, "Exit"))
 
 def check_system_updates():
@@ -923,6 +937,218 @@ def usb_attack_detection(scan_exts=None):
 
     except KeyboardInterrupt:
         print("\n[*] Stopped USB monitoring.")
+        
+
+
+IP_RE = re.compile(r'(?<![\d\.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d\.])')
+TS_CANDIDATES = [
+    ("%b %d %H:%M:%S", lambda s: datetime.strptime(s, "%b %d %H:%M:%S").replace(year=datetime.utcnow().year)),
+    ("%Y-%m-%dT%H:%M:%S", lambda s: datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")),
+    ("%Y-%m-%d %H:%M:%S", lambda s: datetime.strptime(s, "%Y-%m-%d %H:%M:%S")),
+    ("%d/%b/%Y:%H:%M:%S", lambda s: datetime.strptime(s, "%d/%b/%Y:%H:%M:%S")),
+]
+LEVEL_PAT = re.compile(r'\b(critical|crit|error|err|warn|warning|info|notice|debug)\b', re.IGNORECASE)
+PROC_PAT = re.compile(r'([a-zA-Z0-9_\-/.]+)(?:\[\d+\])?:')
+USER_PAT = re.compile(r'\buser\s*=?\s*([a-zA-Z0-9_\-\.$]+)|\bfor\s+([a-zA-Z0-9_\-\.$]+)\b', re.IGNORECASE)
+HTTP_PAT = re.compile(r'\bGET\b|\bPOST\b|\bHTTP/\d', re.IGNORECASE)
+FAIL_PAT = re.compile(r'fail|denied|invalid|error|refused|unauthorized|forbidden|not\s+allowed', re.IGNORECASE)
+AUTH_PAT = re.compile(r'\bssh\b|\bsudo\b|\blogin\b|\bpasswd\b|\bpam\b|\bauth', re.IGNORECASE)
+WEB_PAT = re.compile(r'wp-login|xmlrpc\.php|\.php|/admin|/login|\b404\b|\b403\b', re.IGNORECASE)
+PS_PAT = re.compile(r'powershell|Invoke-WebRequest|bitsadmin|reg\s+add|vssadmin|certutil', re.IGNORECASE)
+LINUX_CMD_PAT = re.compile(r'curl|wget|base64\s+-d|nc\s+-e|/dev/tcp|chmod\s+\+s|useradd|chattr\s+\+i', re.IGNORECASE)
+
+def parse_timestamp(s):
+    s = s.strip()
+    for fmt, fn in TS_CANDIDATES:
+        try:
+            if fmt == "%b %d %H:%M:%S":
+                m = re.match(r'^[A-Za-z]{3}\s+\d{1,2}\s\d{2}:\d{2}:\d{2}', s)
+                if not m: continue
+                return fn(m.group(0))
+            if fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                m = re.search(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}', s)
+                if not m: continue
+                return fn(m.group(0))
+            if fmt == "%d/%b/%Y:%H:%M:%S":
+                m = re.search(r'\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}', s)
+                if not m: continue
+                return fn(m.group(0))
+        except: continue
+    return None
+
+def extract(text):
+    ips = IP_RE.findall(text) or []
+    level = None
+    ml = LEVEL_PAT.search(text)
+    if ml: level = ml.group(1).lower()
+    proc = None
+    mp = PROC_PAT.search(text)
+    if mp: proc = mp.group(1).lower()
+    user = None
+    mu = USER_PAT.search(text)
+    if mu: user = (mu.group(1) or mu.group(2))
+    http = 1 if HTTP_PAT.search(text) else 0
+    fail = 1 if FAIL_PAT.search(text) else 0
+    auth = 1 if AUTH_PAT.search(text) else 0
+    webp = 1 if WEB_PAT.search(text) else 0
+    ps = 1 if PS_PAT.search(text) else 0
+    lnx = 1 if LINUX_CMD_PAT.search(text) else 0
+    return ips, level, proc, user, http, fail, auth, webp, ps, lnx
+
+def level_to_int(x):
+    if not x: return 3
+    x = x.lower()
+    if x in ("critical","crit"): return 5
+    if x in ("error","err"): return 4
+    if x in ("warn","warning"): return 3
+    if x in ("notice","info"): return 2
+    if x in ("debug",): return 1
+    return 3
+
+def hour_features(ts):
+    if ts is None: return 0.0, 0.0
+    h = ts.hour + ts.minute/60.0
+    return math.sin(2*math.pi*h/24.0), math.cos(2*math.pi*h/24.0)
+
+def build_pipeline():
+    text_col = "text"
+    num_cols = ["level_i","ip_count","http","fail","auth","web","ps","lnx","msg_len","digits","hour_sin","hour_cos"]
+    pre = ColumnTransformer([
+        ("txt", TfidfVectorizer(max_features=5000, ngram_range=(1,2), min_df=2), text_col),
+        ("num", StandardScaler(with_mean=False), num_cols),
+    ], remainder="drop", sparse_threshold=0.3)
+    model = IsolationForest(n_estimators=300, contamination=0.03, random_state=42, n_jobs=-1)
+    pipe = Pipeline([("pre", pre), ("clf", model)])
+    return pipe
+
+def rule_engine(df):
+    alerts = []
+    ip_fail = df[df["fail"]==1].groupby("ip", dropna=False).size().sort_values(ascending=False)
+    for ip, cnt in ip_fail.items():
+        if ip and cnt >= 10:
+            alerts.append(f"[ALERT] Multiple failed logins from {ip} ({cnt})")
+    ps_hits = df["ps"].sum()
+    if ps_hits >= 1:
+        alerts.append("[ALERT] Suspicious PowerShell activity detected")
+    lnx_hits = df["lnx"].sum()
+    if lnx_hits >= 1:
+        alerts.append("[ALERT] Suspicious Linux command detected")
+    return alerts
+
+def normalize_scores(scores):
+    s = np.array(scores, dtype=float)
+    if s.size == 0: return s
+    p5, p95 = np.percentile(s, [5,95])
+    denom = max(p95 - p5, 1e-9)
+    z = (s - p5) / denom
+    return np.clip(z, 0, 1)
+
+def run_ai_analyzer():
+    print("[1] Windows Server")
+    print("[2] Linux Server")
+    choice = input("Select server OS [1/2]: ").strip()
+
+    if choice == "1":
+        log_file = r"C:\\Windows\\System32\\winevt\\Logs\\Security.evtx"
+        if not win32evtlog:
+            print("[!] pywin32 (win32evtlog) غير متاح. لازم تسطبه: pip install pywin32")
+            return
+        server = 'localhost'
+        logtype = 'Security'
+        hand = win32evtlog.OpenEventLog(server, logtype)
+        flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+        try:
+            pipe = build_pipeline()
+            df_init = pd.DataFrame([{
+                "level_i":0,"ip_count":0,"http":0,"fail":0,"auth":0,"web":0,"ps":0,"lnx":0,
+                "msg_len":0,"digits":0,"hour_sin":0,"hour_cos":0,"text":""
+            }])
+            pipe.fit(df_init)
+
+            while True:
+                events = win32evtlog.ReadEventLog(hand, flags, 0)
+                for event in events:
+                    raw = f"Event ID: {event.EventID}, Source: {event.SourceName}, Time: {event.TimeGenerated}"
+                    ts = event.TimeGenerated
+                    sinh, cosh = hour_features(ts)
+                    row = pd.DataFrame([{
+                        "level_i": level_to_int("info"),
+                        "ip_count": 0,
+                        "http": 0,"fail": 0,"auth": 0,"web": 0,"ps": 0,"lnx": 0,
+                        "msg_len": len(raw),"digits": sum(c.isdigit() for c in raw),
+                        "hour_sin": sinh,"hour_cos": cosh,
+                        "text": raw
+                    }])
+                    ypred = pipe.predict(row)[0]
+                    score = -pipe.decision_function(row)[0]
+                    norm_score = normalize_scores([score])[0]
+                    alerts = rule_engine(row)
+
+                    if ypred == -1 or norm_score > 0.8 or alerts:
+                        print(f"[THREAT] {raw}")
+                        for a in alerts:
+                            print(a)
+                time.sleep(2)
+        except KeyboardInterrupt:
+            print("[AI Log Analyzer] stopped")
+
+    elif choice == "2":
+        print("Select Linux Server Distribution:")
+        distros = {
+            "1": ("Ubuntu/Debian", "/var/log/auth.log"),
+            "2": ("CentOS/RHEL/Fedora", "/var/log/secure"),
+            "3": ("Kali Linux", "/var/log/auth.log"),
+            "4": ("openSUSE", "/var/log/messages"),
+        }
+        for k, (name, path) in distros.items():
+            print(f"[{k}] {name} (default log: {path})")
+        d_choice = input("Select distribution: ").strip()
+        log_file = distros.get(d_choice, distros["1"])[1]
+
+        if not os.path.isfile(log_file):
+            print("Log file not found:", log_file)
+            return
+
+        print(f"[AI Log Analyzer] Monitoring {log_file} ... Press Ctrl+C to stop")
+        pipe = build_pipeline()
+        df_init = pd.DataFrame([{
+            "level_i":0,"ip_count":0,"http":0,"fail":0,"auth":0,"web":0,"ps":0,"lnx":0,
+            "msg_len":0,"digits":0,"hour_sin":0,"hour_cos":0,"text":""
+        }])
+        pipe.fit(df_init)
+        try:
+            with open(log_file, "r", errors="ignore") as f:
+                f.seek(0, os.SEEK_END)
+                while True:
+                    line = f.readline()
+                    if not line:
+                        time.sleep(0.5)
+                        continue
+                    raw = line.strip()
+                    ts = parse_timestamp(raw)
+                    ips, level, proc, user, http, fail, auth, webp, ps, lnx = extract(raw)
+                    sinh, cosh = hour_features(ts)
+                    row = pd.DataFrame([{
+                        "level_i": level_to_int(level),
+                        "ip_count": len(ips),
+                        "http": http,"fail": fail,"auth": auth,"web": webp,"ps": ps,"lnx": lnx,
+                        "msg_len": len(raw),"digits": sum(c.isdigit() for c in raw),
+                        "hour_sin": sinh,"hour_cos": cosh,
+                        "text": f"{proc or ''} {raw}"
+                    }])
+                    ypred = pipe.predict(row)[0]
+                    score = -pipe.decision_function(row)[0]
+                    norm_score = normalize_scores([score])[0]
+                    alerts = rule_engine(row)
+
+                    if ypred == -1 or norm_score > 0.8 or alerts:
+                        print(f"[THREAT] {raw}")
+                        for a in alerts:
+                            print(a)
+        except KeyboardInterrupt:
+            print("\n[AI Log Analyzer] stopped")
+    else:
+        print("Invalid choice")
 
 
 def main_loop():
@@ -1011,8 +1237,14 @@ def main_loop():
                     print("API key is required")
             elif choice == "12":
                 password_leak_checker()
+                
             elif choice == "13":
                 usb_attack_detection()
+                
+            elif choice == "14":
+                run_ai_analyzer()
+                
+                
             elif choice == "0":
                 if confirm("Exit the program? (y/n): "):
                     print("Bye")
