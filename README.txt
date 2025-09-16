@@ -10,13 +10,16 @@ RedButton هي أداة لحماية جهازك وفحص الملفات المش
 ---
 
 ## ⚙️ Setup
-
+```
 git clone https://github.com/Orbitz11/redbutton.git
 cd redbutton
 pip install -r requirements.txt
 
+```
 ---
 
 ## ▶️ Run
-
+```
 python redbutton.py
+
+```
