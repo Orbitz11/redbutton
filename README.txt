@@ -1,12 +1,23 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Orbitz11/redbutton/refs/heads/main/Screenshot%20(49).png" alt="Banner" width="80%" />
+</p>
+
 # RedButton v1.5
 
-## Setup
+RedButton هي أداة لحماية جهازك وفحص الملفات المشبوهة من مكان واحد.  
+تقدر من خلالها تفحص الإنترنت، الملفات، النوافذ المفتوحة، كلمات السر، وتشفر/تفك تشفير مجلدات.  
+أداة بتجمع كل المهام دي لتأمين جهازك بسرعة وسهولة. 🚀
+
+---
+
+## ⚙️ Setup
+
 git clone https://github.com/Orbitz11/redbutton.git
+cd redbutton
 pip install -r requirements.txt
 
-## Run
+---
+
+## ▶️ Run
+
 python redbutton.py
-
-![Banner](https://raw.githubusercontent.com/Orbitz11/redbutton/refs/heads/main/Screenshot%20(49).png)
-
-
