@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Orbitz11/redbutton/refs/heads/main/Screenshot%20(49).png" alt="Banner" width="80%" />
+  <img src="https://github.com/Orbitz11/redbutton/blob/main/Screenshot%20(49).png" alt="Banner" width="80%" />
 </p>
 
 # RedButton v1.5
