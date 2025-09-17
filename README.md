@@ -110,6 +110,65 @@
             color: #c9d1d9;
             border: 1px solid #363b42;
         }
+        .developer-info {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin: 15px 0;
+            padding: 15px;
+            background: linear-gradient(90deg, #161b22, #0d1117);
+            border-radius: 8px;
+            border: 1px solid #21262d;
+        }
+        .developer-avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: 2px solid #58a6ff;
+            overflow: hidden;
+        }
+        .developer-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .developer-details {
+            display: flex;
+            flex-direction: column;
+        }
+        .developer-name {
+            font-weight: bold;
+            color: #58a6ff;
+            font-size: 18px;
+        }
+        .developer-role {
+            color: #7d8590;
+            font-size: 14px;
+        }
+        .version-info {
+            text-align: center;
+            margin: 15px 0;
+            padding: 12px;
+            background: linear-gradient(90deg, #0d1117, #161b22);
+            border-radius: 8px;
+            border: 1px solid #21262d;
+        }
+        .version-title {
+            font-size: 16px;
+            color: #7ee787;
+            margin-bottom: 5px;
+        }
+        .version-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #f0f6fc;
+        }
+        .version-date {
+            font-size: 14px;
+            color: #7d8590;
+            margin-top: 5px;
+        }
         .content {
             display: grid;
             grid-template-columns: 1fr 300px;
@@ -237,6 +296,10 @@
             .repo-buttons {
                 flex-wrap: wrap;
             }
+            .developer-info {
+                flex-direction: column;
+                text-align: center;
+            }
         }
     </style>
 </head>
@@ -255,7 +318,7 @@
         </div>
 
         <div class="banner">
-            <img src="https://placehold.co/800x300/161b22/7d8590/png?text=RedButton+Banner" alt="RedButton Banner">
+            <img src="https://placehold.co/800x300/161b22/7d8590/png?text=RedButton+Project+Banner" alt="RedButton Banner">
         </div>
 
         <div class="badges">
@@ -266,11 +329,30 @@
             <span class="badge"><i class="fas fa-eye"></i> 11,897 visits</span>
         </div>
 
+        <!-- معلومات المبرمج -->
+        <div class="developer-info">
+            <div class="developer-avatar">
+                <img src="https://placehold.co/100x100/161b22/58a6ff/png?text=O" alt="Developer Avatar">
+            </div>
+            <div class="developer-details">
+                <div class="developer-name">Orbitz11</div>
+                <div class="developer-role">مطور ومبرمج المشروع</div>
+            </div>
+        </div>
+
+        <!-- معلومات الاصدار -->
+        <div class="version-info">
+            <div class="version-title">الإصدار الحالي</div>
+            <div class="version-number">v1.5</div>
+            <div class="version-date">تم التحديث في: 15 نوفمبر 2023</div>
+        </div>
+
         <div class="content">
             <div class="main-content">
                 <div class="about">
                     <h2>RedButton v1.5</h2>
                     <p>A powerful utility tool for security testing and system administration tasks. RedButton provides a suite of tools for professionals in cybersecurity and IT administration.</p>
+                    <p>تم تطويره بواسطة Orbitz11، هذا المشروع مخصص لاختبار الأمان وإدارة النظام مع واجهة سهلة الاستخدام.</p>
                 </div>
 
                 <div class="setup">
@@ -298,6 +380,8 @@
                 <div class="card">
                     <h3>About</h3>
                     <p>A security testing tool written in Python with various utilities for system administrators.</p>
+                    <p>تم تطويره بواسطة: <strong>Orbitz11</strong></p>
+                    <p>الإصدار: <strong>1.5</strong></p>
                 </div>
 
                 <div class="card">
@@ -333,6 +417,14 @@
                         <div class="stat-item">
                             <span>Forks:</span>
                             <span class="stat-value">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>المبرمج:</span>
+                            <span class="stat-value">Orbitz11</span>
+                        </div>
+                        <div class="stat-item">
+                            <span>الإصدار:</span>
+                            <span class="stat-value">1.5</span>
                         </div>
                     </div>
                 </div>
@@ -380,6 +472,17 @@
                 let count = parseInt(countElement.textContent);
                 
                 if (this.classList.contains('btn-star')) {
+                    if (this.classList.contains('active')) {
+                        count--;
+                        this.classList.remove('active');
+                        this.querySelector('i').classList.replace('fas', 'far');
+                    } else {
+                        count++;
+                        this.classList.add('active');
+                        this.querySelector('i').classList.replace('far', 'fas');
+                    }
+                    countElement.textContent = count;
+                } else if (this.classList.contains('btn-watch')) {
                     if (this.classList.contains('active')) {
                         count--;
                         this.classList.remove('active');
